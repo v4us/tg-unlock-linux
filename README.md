@@ -211,11 +211,13 @@ To improve user experience with multiple connected clients, the daemon supports 
 1. When a client successfully authenticates, their IP is recorded as "trusted"
 2. If the same IP connects again within 10 minutes, auth is automatically bypassed
 3. After 10 minutes of inactivity, the IP is removed from trusted list
+4. Expired entries are cleaned up every 5 minutes to prevent memory leaks
 
 **Benefits:**
 - Eliminates need to re-enter credentials for frequently connecting clients
 - Maintains security by expiring trusted status after 10 minutes
 - Works automatically - no configuration needed
+- Prevents memory leaks with automatic cleanup
 
 **Use cases:**
 - Multiple devices from the same network

@@ -81,6 +81,14 @@ impl TrustedIps {
         let mut map = self.map.lock().await;
         map.insert(ip.to_string(), now);
     }
+
+    pub async fn cleanup_expired(&self) {
+        let now = SystemTime::now();
+        let ten_mins = Duration::from_secs(600);
+        
+        let mut map = self.map.lock().await;
+        map.retain(|_, time| now.duration_since(*time).ok().map(|d| d < ten_mins).unwrap_or(false));
+    }
 }
 
 // DC extraction from obfuscated2 init packet (same method as tg-ws-proxy)
@@ -458,6 +466,9 @@ pub async fn run_proxy(bind: &str, port: u16) -> Result<(), String> {
 
     info!("SOCKS5 proxy started on {}", addr);
 
+    // Cleanup interval - remove expired trusted IPs every 5 minutes
+    let mut cleanup_interval = tokio::time::interval(Duration::from_secs(300));
+
     loop {
         tokio::select! {
             result = listener.accept() => {
@@ -468,6 +479,9 @@ pub async fn run_proxy(bind: &str, port: u16) -> Result<(), String> {
                         let _ = handle_socks5(stream, &auth, &trusted_ips).await;
                     });
                 }
+            }
+            _ = cleanup_interval.tick() => {
+                trusted_ips.cleanup_expired().await;
             }
         }
     }
