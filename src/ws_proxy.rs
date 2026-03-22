@@ -217,8 +217,8 @@ async fn relay_via_ws(
     const RELAY_BUFFER_SIZE: usize = 32768;
     let mut buf = vec![0u8; RELAY_BUFFER_SIZE];
 
-    // Ping interval: send ping every 30 seconds to keep connection alive
-    let mut ping_interval = time::interval(Duration::from_secs(30));
+    // Ping interval: send ping every 15 seconds to keep inbound connection alive
+    let mut ping_interval = time::interval(Duration::from_secs(15));
 
     loop {
         tokio::select! {
