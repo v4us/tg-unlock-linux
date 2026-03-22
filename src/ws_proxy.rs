@@ -256,17 +256,24 @@ async fn handle_auth(stream: &mut TcpStream, auth: &AuthConfig) -> Result<bool, 
 
 /// Choose the best authentication method from client's offers
 fn select_auth_method(client_methods: &[u8], auth: &AuthConfig) -> Option<u8> {
-    // Check each method the client offered
-    for &method in client_methods {
-        // If user/pass auth is enabled and client offers it
-        if auth.enabled && method == 0x02 {
-            return Some(0x02);
+    // If auth is enabled, prefer user-pass auth (0x02) regardless of offer order
+    if auth.enabled {
+        // First check if client offered user-pass auth
+        for &method in client_methods {
+            if method == 0x02 {
+                return Some(0x02);
+            }
         }
-        // Always prefer no-auth if client offers it
+        // User-pass not offered, fall through to no-auth
+    }
+    
+    // Check for no-auth (0x00) if offered
+    for &method in client_methods {
         if method == 0x00 {
             return Some(0x00);
         }
     }
+    
     None
 }
 
