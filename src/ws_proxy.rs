@@ -141,6 +141,7 @@ async fn relay_via_ws(
     init: &[u8; 64],
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use futures_util::{SinkExt, StreamExt};
+    use tokio::time::{self, Duration};
 
     let url = ws_url(dc);
     let mut request = url.as_str().into_client_request()?;
@@ -165,9 +166,17 @@ async fn relay_via_ws(
     const RELAY_BUFFER_SIZE: usize = 32768;
     let mut buf = vec![0u8; RELAY_BUFFER_SIZE];
 
+    // Ping interval: send ping every 30 seconds to keep connection alive
+    let mut ping_interval = time::interval(Duration::from_secs(30));
+
     loop {
         tokio::select! {
             biased;
+
+            // Periodic ping to keep WebSocket alive
+            _ = ping_interval.tick() => {
+                let _ = ws.send(tungstenite::Message::Ping(vec![])).await;
+            }
 
             ws_msg = ws.next() => {
                 match ws_msg {
