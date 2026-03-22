@@ -9,6 +9,8 @@ use tokio_tungstenite::tungstenite;
 use tungstenite::client::IntoClientRequest;
 use log::{info, debug, error};
 use std::env;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// SOCKS5 Auth config (from environment variables)
 #[derive(Clone)]
@@ -92,9 +94,12 @@ impl TrustedIps {
         let after = map.len();
         if before != after {
             info!("Trusted IP cleanup: removed {} expired entries ({} remaining)", before - after, after);
-        } else {
-            debug!("Trusted IP cleanup: {} entries (no changes)", before);
         }
+    }
+
+    pub async fn get_ip_stats(&self) -> HashMap<String, u64> {
+        let map = self.map.lock().await;
+        map.iter().map(|(ip, _)| (ip.clone(), 1)).collect()
     }
 }
 
@@ -432,6 +437,9 @@ async fn handle_socks5(mut stream: TcpStream, auth: &AuthConfig, trusted_ips: &T
         });
 
         info!("Using WebSocket tunnel for DC{}", dc);
+
+        // Log connection destination for traffic statistics
+        info!("Connection to {}:{}", dest_addr, dest_port);
 
         let ws_result = relay_via_ws(stream, dc, &init).await;
 
