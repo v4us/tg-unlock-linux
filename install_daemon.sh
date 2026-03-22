@@ -23,15 +23,8 @@ if [ ! -f "$BINARY_PATH" ]; then
     exit 1
 fi
 
-# Check if service file exists
-if [ -f "$SERVICE_FILE" ]; then
-    echo "Service file already exists at $SERVICE_FILE"
-    echo "Skipping creation..."
-else
-    echo "Creating service file..."
-    
-    # Create the unit file
-    cat > "$SERVICE_FILE" << 'EOF'
+# Create the unit file
+cat > "$SERVICE_FILE" << 'EOF'
 [Unit]
 Description=Telegram Unblock - SOCKS5 WebSocket Proxy
 Documentation=https://github.com/by-sonic/tglock
@@ -52,13 +45,14 @@ StandardError=journal
 SyslogIdentifier=tg_unblock
 Restart=on-failure
 RestartSec=10
+# File descriptor limit for high connection count
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    echo "Service file created at $SERVICE_FILE"
-fi
+echo "Service file created at $SERVICE_FILE"
 
 # Reload systemd
 echo "Reloading systemd daemon..."
@@ -74,12 +68,19 @@ echo "=== Installation Complete ==="
 echo ""
 echo "To configure authentication, edit: $SERVICE_FILE"
 echo "Set your secure username/password in the Environment lines."
+echo "LimitNOFILE=65536 is already added for high connection count."
 echo ""
 echo "Common commands:"
 echo "  systemctl start tg_unblock     # Start the service"
 echo "  systemctl stop tg_unblock      # Stop the service"
 echo "  systemctl status tg_unblock    # Check status"
 echo "  journalctl -u tg_unblock -f  # View logs"
+echo ""
+echo "Notes:"
+echo "  - Authentication is enabled by default (TG_UNBLOCK_AUTH=1)"
+echo "  - Set a secure password in the service file"
+echo "  - LimitNOFILE=65536 prevents 'Too many open files' errors"
+echo "  - For external access, add: --bind 0.0.0.0 to ExecStart"
 echo ""
 echo "Current status:"
 systemctl status tg_unblock --no-pager
