@@ -209,6 +209,9 @@ async fn relay_via_ws(
     }
 
     let _ = ws.close(None).await;
+
+    info!("Connection closed - WebSocket tunnel ended");
+
     Ok(())
 }
 
