@@ -291,23 +291,27 @@ Based on review by Qwen/Qwen3-Coder-480B-A35B-Instruct:
 
 MIT - Same as original project.
 
-Copyright (c) 2026 by sonic (original project)  
-Copyright (c) 2026 Tony Walker (Linux CLI derivative)
+Copyright (c) 2026 Tony Walker (Linux CLI version)  
+Copyright (c) 2026 by sonic (original project)
 
 ## Author
 
-Original: by sonic ([@bysonicvpn_bot](https://t.me/bysonicvpn_bot))  
-Linux CLI version with auth + daemon + DC documentation: Modified by Tony Walker (Tony Walker) for Linux without GUI dependencies.
+**Linux CLI Version**: Tony Walker  
+A Linux CLI adaptation of tg-unlock with authentication, systemd daemon support, and comprehensive DC documentation.
+
+**Based on**: Original tg-unlock by by sonic ([@bysonicvpn_bot](https://t.me/bysonicvpn_bot))
+
+**Collaboration**: v4us (repository owner and maintainer)
 
 ---
 
-_This is a Linux CLI derivative of tg-unlock_  
+_This is a Linux CLI variant of tg-unlock_  
 _All core functionality preserved, GUI removed, auth and daemon support added_  
 _Telegram DC mapping documented per official mtproto specification_  
-_Security fixes implemented per code review findings_
+_Security fixes implemented with code review by Qwen/Claude models_
 
 ---
 
 ## Acknowledgments
 
-This project is inspired by and based on the original [tg-unlock](https://github.com/by-sonic/tglock) project by by sonic, which provided the foundation for this Linux CLI adaptation.
+Based on the original [tg-unlock](https://github.com/by-sonic/tglock) project by by sonic.
