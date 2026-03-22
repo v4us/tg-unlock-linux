@@ -7,7 +7,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::tungstenite;
 use tungstenite::client::IntoClientRequest;
-use log::{info, error};
+use log::{info, debug, error};
 use std::env;
 
 /// SOCKS5 Auth config (from environment variables)
@@ -87,7 +87,14 @@ impl TrustedIps {
         let ten_mins = Duration::from_secs(600);
         
         let mut map = self.map.lock().await;
+        let before = map.len();
         map.retain(|_, time| now.duration_since(*time).ok().map(|d| d < ten_mins).unwrap_or(false));
+        let after = map.len();
+        if before != after {
+            info!("Trusted IP cleanup: removed {} expired entries ({} remaining)", before - after, after);
+        } else {
+            debug!("Trusted IP cleanup: {} entries (no changes)", before);
+        }
     }
 }
 
