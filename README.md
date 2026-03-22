@@ -203,6 +203,31 @@ When authentication is enabled, clients must provide valid credentials:
 0x01 0x00   # Success!
 ```
 
+### Trusted IP Auto-Auth Bypass
+
+To improve user experience with multiple connected clients, the daemon supports automatic auth bypass for trusted IPs:
+
+**How it works:**
+1. When a client successfully authenticates, their IP is recorded as "trusted"
+2. If the same IP connects again within 10 minutes, auth is automatically bypassed
+3. After 10 minutes of inactivity, the IP is removed from trusted list
+
+**Benefits:**
+- Eliminates need to re-enter credentials for frequently connecting clients
+- Maintains security by expiring trusted status after 10 minutes
+- Works automatically - no configuration needed
+
+**Use cases:**
+- Multiple devices from the same network
+- Mobile clients that reconnect after backgrounding
+- Apps that open multiple connections
+
+**Security considerations:**
+- Only trusted locally (within daemon memory)
+- IPs expire after 10 minutes of inactivity
+- No permanent storage of IP records
+- Clients must still provide valid credentials for first connection
+
 ### Environment Variables
 
 | Variable | Description | Example |
@@ -210,6 +235,7 @@ When authentication is enabled, clients must provide valid credentials:
 | `TG_UNBLOCK_AUTH` | Enable auth (`1`/`true`) | `export TG_UNBLOCK_AUTH=1` |
 | `TG_UNBLOCK_USERNAME` | Auth username | `export TG_UNBLOCK_USERNAME=myuser` |
 | `TG_UNBLOCK_PASSWORD` | Auth password | `export TG_UNBLOCK_PASSWORD=mypassword` |
+| `TG_UNBLOCK_TRUSTED_EXPIRY` | Trusted IP expiry in seconds | `export TG_UNBLOCK_TRUSTED_EXPIRY=600` (default 600) |
 
 ### Notes
 - **No auth by default** - for backward compatibility with existing clients
@@ -217,6 +243,7 @@ When authentication is enabled, clients must provide valid credentials:
 - **Client must support SOCKS5 auth (RFC 1929)** - most modern clients do (Telegram Desktop, browsers, etc.)
 - **Timing attack prevention** - uses constant-time comparison
 - **No username logging** - prevents user enumeration attacks
+- **Trusted IP auto-auth** - successful connections are tracked; IPs within 10-min window get auto-auth bypass (configurable via `TG_UNBLOCK_TRUSTED_EXPIRY`)
 
 ## Telegram Data Center Mapping
 
