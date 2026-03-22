@@ -8,21 +8,21 @@ Type=simple
 User=user1
 Group=users
 WorkingDirectory=/home/user1/.openclaw/workspace/tglock
-ExecStart=/home/user1/.openclaw/workspace/tglock/target/release/tg_unblock --bind 127.0.0.1 --port 8888
+ExecStart=/home/user1/.openclaw/workspace/tglock/target/release/tg_unblock --bind 0.0.0.0 --port 8888 --verbose
 Environment="TG_UNBLOCK_AUTH=1"
 Environment="TG_UNBLOCK_USERNAME=tgproxy"
-Environment="TG_UNBLOCK_PASSWORD=YOUR_SECURE_PASSWORD_HERE"
+Environment="TG_UNBLOCK_PASSWORD=JOnfTRYvZSohWcqiVLLnxjK2pSVStr0BAEHOWbVH9jw="
 # Redirect output to syslog
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=tg_unblock
 
-# Security hardening
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/log
+# Security hardening (relaxed for external access)
+#NoNewPrivileges=true
+#PrivateTmp=true
+#ProtectSystem=strict
+#ProtectHome=true
+#ReadWritePaths=/var/log
 
 # Restart policy
 Restart=on-failure
