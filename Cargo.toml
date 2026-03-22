@@ -1,0 +1,30 @@
+[package]
+name = "tg_unblock"
+version = "0.5.0"
+edition = "2021"
+description = "Command-line tool to bypass Telegram blocking via WebSocket tunnel"
+license = "MIT"
+readme = "PUBLISHINGREADME.md"
+homepage = "https://github.com/by-sonic/tglock"
+repository = "https://github.com/by-sonic/tglock"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+native-tls = "0.2"
+futures-util = "0.3"
+aes = "0.8"
+ctr = "0.9"
+cipher = "0.4"
+clap = { version = "4.5", features = ["derive"] }
+log = "0.4"
+env_logger = "0.11"
+subtle = "2.5"
+
+[[bin]]
+name = "tg_unblock"
+path = "src/cli.rs"
+
+[lib]
+name = "tg_unblock"
+path = "src/lib.rs"

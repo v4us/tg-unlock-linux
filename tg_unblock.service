@@ -1,0 +1,32 @@
+[Unit]
+Description=Telegram Unblock - SOCKS5 WebSocket Proxy
+Documentation=https://github.com/by-sonic/tglock
+After=network.target
+
+[Service]
+Type=simple
+User=user1
+Group=users
+WorkingDirectory=/home/user1/.openclaw/workspace/tglock
+ExecStart=/home/user1/.openclaw/workspace/tglock/target/release/tg_unblock --bind 127.0.0.1 --port 8888
+Environment="TG_UNBLOCK_AUTH=1"
+Environment="TG_UNBLOCK_USERNAME=tgproxy"
+Environment="TG_UNBLOCK_PASSWORD=YOUR_SECURE_PASSWORD_HERE"
+# Redirect output to syslog
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tg_unblock
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log
+
+# Restart policy
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
