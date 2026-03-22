@@ -362,6 +362,9 @@ async fn handle_socks5(mut stream: TcpStream, auth: &AuthConfig, trusted_ips: &T
     // --- auth negotiation ---
     let mut buf = [0u8; 258];
     let n = stream.read(&mut buf).await?;
+    
+    // Log inbound connection from client
+    info!("Inbound connection from {}:{}", client_ip.as_deref().unwrap_or("unknown"), stream.peer_addr().ok().map(|a| a.port()).unwrap_or(0));
     info!("Received {} bytes from client", n);
     
     if n < 2 || buf[0] != 0x05 {
@@ -398,6 +401,7 @@ async fn handle_socks5(mut stream: TcpStream, auth: &AuthConfig, trusted_ips: &T
                 // Record trusted IP for future auto-auth bypass
                 if let Some(ref ip) = client_ip {
                     trusted_ips.record_connection(ip).await;
+                    info!("Trusted IP recorded: {}", ip);
                 }
             }
         }
