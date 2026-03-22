@@ -1,4 +1,8 @@
 use std::net::Ipv4Addr;
+use std::sync::Arc;
+use std::collections::HashMap;
+use std::time::{Duration, SystemTime};
+use tokio::sync::Mutex;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::tungstenite;
@@ -44,6 +48,38 @@ impl AuthConfig {
 impl Default for AuthConfig {
     fn default() -> Self {
         AuthConfig::from_env()
+    }
+}
+
+/// Trusted IP records with timestamps
+pub struct TrustedIps {
+    map: Mutex<HashMap<String, SystemTime>>,
+}
+
+impl TrustedIps {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            map: Mutex::new(HashMap::new()),
+        })
+    }
+
+    pub async fn is_trusted(&self, ip: &str) -> bool {
+        let now = SystemTime::now();
+        let ten_mins = Duration::from_secs(600); // 10 minutes
+        
+        let map = self.map.lock().await;
+        if let Some(time) = map.get(ip) {
+            if now.duration_since(*time).ok().map(|d| d < ten_mins).unwrap_or(false) {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub async fn record_connection(&self, ip: &str) {
+        let now = SystemTime::now();
+        let mut map = self.map.lock().await;
+        map.insert(ip.to_string(), now);
     }
 }
 
@@ -267,16 +303,19 @@ async fn handle_auth(stream: &mut TcpStream, auth: &AuthConfig) -> Result<bool, 
 }
 
 /// Choose the best authentication method from client's offers
-fn select_auth_method(client_methods: &[u8], auth: &AuthConfig) -> Option<u8> {
-    // If auth is enabled, prefer user-pass auth (0x02) regardless of offer order
+fn select_auth_method(client_methods: &[u8], auth: &AuthConfig, is_trusted: bool) -> Option<u8> {
+    // If auth is enabled and IP is trusted (recent connection), allow no-auth
+    if auth.enabled && is_trusted {
+        return Some(0x00);
+    }
+    
+    // If auth is enabled and IP is not trusted, prefer user-pass (0x02)
     if auth.enabled {
-        // First check if client offered user-pass auth
         for &method in client_methods {
             if method == 0x02 {
                 return Some(0x02);
             }
         }
-        // User-pass not offered, fall through to no-auth
     }
     
     // Check for no-auth (0x00) if offered
@@ -289,11 +328,17 @@ fn select_auth_method(client_methods: &[u8], auth: &AuthConfig) -> Option<u8> {
     None
 }
 
-async fn handle_socks5(mut stream: TcpStream, auth: &AuthConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn handle_socks5(mut stream: TcpStream, auth: &AuthConfig, trusted_ips: &TrustedIps) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     stream.set_nodelay(true)?;
     
-    info!("New connection accepted");
-
+    // Extract client IP for trusted IP check
+    let client_ip = stream.peer_addr().ok().map(|addr| addr.ip().to_string());
+    let is_trusted = if let Some(ref ip) = client_ip {
+        trusted_ips.is_trusted(ip).await
+    } else {
+        false
+    };
+    
     // --- auth negotiation ---
     let mut buf = [0u8; 258];
     let n = stream.read(&mut buf).await?;
@@ -313,7 +358,8 @@ async fn handle_socks5(mut stream: TcpStream, auth: &AuthConfig) -> Result<(), B
     info!("Client offered methods: {:?}", offered_methods);
 
     // Select the best method we support
-    let chosen_method = select_auth_method(offered_methods, auth);
+    // Auto-auth bypass: if trusted IP (recent connection) and auth enabled, allow 0x00
+    let chosen_method = select_auth_method(offered_methods, auth, is_trusted);
     
     match chosen_method {
         Some(method) => {
@@ -329,6 +375,10 @@ async fn handle_socks5(mut stream: TcpStream, auth: &AuthConfig) -> Result<(), B
                 info!("Authentication successful");
             } else if method == 0x00 {
                 info!("No authentication required (no-auth 0x00)");
+                // Record trusted IP for future auto-auth bypass
+                if let Some(ref ip) = client_ip {
+                    trusted_ips.record_connection(ip).await;
+                }
             }
         }
         None => {
@@ -393,6 +443,7 @@ async fn handle_socks5(mut stream: TcpStream, auth: &AuthConfig) -> Result<(), B
 
 pub async fn run_proxy(bind: &str, port: u16) -> Result<(), String> {
     let auth = AuthConfig::from_env();
+    let trusted_ips = TrustedIps::new();
     
     if auth.enabled {
         info!("Authentication enabled (method 0x02 available)");
@@ -412,8 +463,9 @@ pub async fn run_proxy(bind: &str, port: u16) -> Result<(), String> {
             result = listener.accept() => {
                 if let Ok((stream, _)) = result {
                     let auth = auth.clone();
+                    let trusted_ips = trusted_ips.clone();
                     tokio::spawn(async move {
-                        let _ = handle_socks5(stream, &auth).await;
+                        let _ = handle_socks5(stream, &auth, &trusted_ips).await;
                     });
                 }
             }
