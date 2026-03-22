@@ -24,6 +24,9 @@ SyslogIdentifier=tg_unblock
 #ProtectHome=true
 #ReadWritePaths=/var/log
 
+# File descriptor limit for high connection count
+LimitNOFILE=65536
+
 # Restart policy
 Restart=on-failure
 RestartSec=10
