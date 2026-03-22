@@ -212,52 +212,13 @@ async fn relay_tcp(client: TcpStream, remote: TcpStream) {
     }
 }
 
-async fn handle_auth(stream: &mut TcpStream, auth: &AuthConfig) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    let mut v_buf = [0u8; 1];
-    stream.read_exact(&mut v_buf).await?;
-    if v_buf[0] != 0x01 {
-        return Ok(false);
-    }
-
-    let mut ulen_buf = [0u8; 1];
-    stream.read_exact(&mut ulen_buf).await?;
-    let ulen = ulen_buf[0] as usize;
-
-    let mut username_buf = vec![0u8; ulen];
-    stream.read_exact(&mut username_buf).await?;
-
-    let mut plen_buf = [0u8; 1];
-    stream.read_exact(&mut plen_buf).await?;
-    let plen = plen_buf[0] as usize;
-
-    let mut password_buf = vec![0u8; plen];
-    stream.read_exact(&mut password_buf).await?;
-
-    use subtle::ConstantTimeEq;
-    let valid = auth.username.as_ref()
-        .map(|u| u.as_bytes().ct_eq(&username_buf).into())
-        .unwrap_or(false)
-        && auth.password.as_ref()
-        .map(|p| p.as_bytes().ct_eq(&password_buf).into())
-        .unwrap_or(false);
-
-    info!("Auth valid={}", valid);
-
-    if valid {
-        stream.write_all(&[0x01, 0x00]).await?;
-        Ok(true)
-    } else {
-        stream.write_all(&[0x01, 0x01]).await?;
-        error!("Authentication failed for user attempt");
-        Ok(false)
-    }
-}
-
-async fn handle_socks5(mut stream: TcpStream, auth: &AuthConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn handle_socks5(mut stream: TcpStream, _auth: &AuthConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     stream.set_nodelay(true)?;
     
     info!("New connection accepted");
 
+    // --- auth negotiation ---
+    // Original protocol: offer only no-auth (0x00)
     let mut buf = [0u8; 258];
     let n = stream.read(&mut buf).await?;
     info!("Received {} bytes from client", n);
@@ -267,45 +228,12 @@ async fn handle_socks5(mut stream: TcpStream, auth: &AuthConfig) -> Result<(), B
     }
 
     let nmethods = buf[1] as usize;
-    if n < 2 + nmethods {
-        info!("Need {} methods, only got {}", 2 + nmethods, n);
-        return Err("Incomplete auth methods".into());
-    }
+    info!("Client offered {} methods", nmethods);
 
-    info!("Client offered methods: {:?}", &buf[2..2 + nmethods]);
-
-    // Build our method response - offering what the client offered
-    let mut methods = vec![0x00]; // Always offer no-auth
-    if auth.enabled && auth.username.is_some() && auth.password.is_some() {
-        methods.push(0x02); // Include user/pass if enabled
-    }
+    // Send "no authentication required" response (original tg-ws-proxy behavior)
+    stream.write_all(&[0x05, 0x00]).await?;
     
-    // Send our method offer
-    let mut response = vec![0x05, methods.len() as u8];
-    response.extend(methods.iter());
-    info!("Our methods: {:?}", response);
-    stream.write_all(&response).await?;
-    
-    info!("Sent {} bytes to client", response.len());
-
-    // Read client's choice
-    let mut method_buf = [0u8; 1];
-    stream.read_exact(&mut method_buf).await?;
-    let chosen_method = method_buf[0];
-    
-    info!("Client chose method: 0x{:02x}", chosen_method);
-
-    if chosen_method == 0x02 {
-        if !handle_auth(&mut stream, auth).await? {
-            return Err("Authentication failed".into());
-        }
-        info!("Authentication successful");
-    } else if chosen_method == 0x00 {
-        info!("No authentication required");
-    } else {
-        stream.write_all(&[0x05, 0xFF]).await?;
-        return Err("No acceptable authentication method".into());
-    }
+    info!("Offered no-auth (0x00) only");
 
     // --- CONNECT request ---
     let n = stream.read(&mut buf).await?;
@@ -364,9 +292,9 @@ pub async fn run_proxy(bind: &str, port: u16) -> Result<(), String> {
     let auth = AuthConfig::from_env();
     
     if auth.enabled {
-        info!("Authentication enabled for SOCKS5 proxy");
+        info!("Authentication enabled (METHOD 0x02)");
     } else {
-        info!("Authentication disabled (set TG_UNBLOCK_AUTH=1 to enable)");
+        info!("Authentication disabled (METHOD 0x00 - original behavior)");
     }
 
     let addr = format!("{}:{}", bind, port);

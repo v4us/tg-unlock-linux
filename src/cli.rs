@@ -38,17 +38,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Setup logging
     init_logging(args.verbose);
 
     // Check auth config and display info
-    let auth = AuthConfig::from_env();
-    if auth.enabled {
-        info!("Authentication enabled (USERNAME={})", 
-            auth.username.map(|u| format!("***{}***", u.len())).unwrap_or_else(|| "none".to_string()));
-    } else {
-        info!("Authentication disabled");
-    }
+    let _auth = AuthConfig::from_env();
+    info!("Configured with authentication enabled: {}", _auth.enabled);
+    info!("Using no-auth (0x00) mode - compatible with original tg-ws-proxy");
 
     info!("Starting tg_unblock v{}", env!("CARGO_PKG_VERSION"));
     info!("SOCKS5 proxy on {}:{}", args.bind, args.port);
