@@ -212,13 +212,70 @@ async fn relay_tcp(client: TcpStream, remote: TcpStream) {
     }
 }
 
-async fn handle_socks5(mut stream: TcpStream, _auth: &AuthConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn handle_auth(stream: &mut TcpStream, auth: &AuthConfig) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    use subtle::ConstantTimeEq;
+    
+    let mut v_buf = [0u8; 1];
+    stream.read_exact(&mut v_buf).await?;
+    if v_buf[0] != 0x01 {
+        return Ok(false);
+    }
+
+    let mut ulen_buf = [0u8; 1];
+    stream.read_exact(&mut ulen_buf).await?;
+    let ulen = ulen_buf[0] as usize;
+
+    let mut username_buf = vec![0u8; ulen];
+    stream.read_exact(&mut username_buf).await?;
+
+    let mut plen_buf = [0u8; 1];
+    stream.read_exact(&mut plen_buf).await?;
+    let plen = plen_buf[0] as usize;
+
+    let mut password_buf = vec![0u8; plen];
+    stream.read_exact(&mut password_buf).await?;
+
+    let valid = auth.username.as_ref()
+        .map(|u| u.as_bytes().ct_eq(&username_buf).into())
+        .unwrap_or(false)
+        && auth.password.as_ref()
+        .map(|p| p.as_bytes().ct_eq(&password_buf).into())
+        .unwrap_or(false);
+
+    info!("Auth valid={}", valid);
+
+    if valid {
+        stream.write_all(&[0x01, 0x00]).await?;
+        Ok(true)
+    } else {
+        stream.write_all(&[0x01, 0x01]).await?;
+        error!("Authentication failed for user attempt");
+        Ok(false)
+    }
+}
+
+/// Choose the best authentication method from client's offers
+fn select_auth_method(client_methods: &[u8], auth: &AuthConfig) -> Option<u8> {
+    // Check each method the client offered
+    for &method in client_methods {
+        // If user/pass auth is enabled and client offers it
+        if auth.enabled && method == 0x02 {
+            return Some(0x02);
+        }
+        // Always prefer no-auth if client offers it
+        if method == 0x00 {
+            return Some(0x00);
+        }
+    }
+    None
+}
+
+async fn handle_socks5(mut stream: TcpStream, auth: &AuthConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     stream.set_nodelay(true)?;
     
     info!("New connection accepted");
 
     // --- auth negotiation ---
-    // Original protocol: offer only no-auth (0x00)
     let mut buf = [0u8; 258];
     let n = stream.read(&mut buf).await?;
     info!("Received {} bytes from client", n);
@@ -228,12 +285,39 @@ async fn handle_socks5(mut stream: TcpStream, _auth: &AuthConfig) -> Result<(), 
     }
 
     let nmethods = buf[1] as usize;
-    info!("Client offered {} methods", nmethods);
+    if n < 2 + nmethods {
+        info!("Need {} methods, only got {}", 2 + nmethods, n);
+        return Err("Incomplete auth methods".into());
+    }
 
-    // Send "no authentication required" response (original tg-ws-proxy behavior)
-    stream.write_all(&[0x05, 0x00]).await?;
+    let offered_methods = &buf[2..2 + nmethods];
+    info!("Client offered methods: {:?}", offered_methods);
+
+    // Select the best method we support
+    let chosen_method = select_auth_method(offered_methods, auth);
     
-    info!("Offered no-auth (0x00) only");
+    match chosen_method {
+        Some(method) => {
+            // Send our method choice (version 5, chosen method)
+            stream.write_all(&[0x05, method]).await?;
+            info!("Chose method 0x{:02x}", method);
+
+            if method == 0x02 {
+                // Username/Password authentication
+                if !handle_auth(&mut stream, auth).await? {
+                    return Err("Authentication failed".into());
+                }
+                info!("Authentication successful");
+            } else if method == 0x00 {
+                info!("No authentication required (no-auth 0x00)");
+            }
+        }
+        None => {
+            // No acceptable method - return 0xFF
+            stream.write_all(&[0x05, 0xFF]).await?;
+            return Err("No acceptable authentication method".into());
+        }
+    }
 
     // --- CONNECT request ---
     let n = stream.read(&mut buf).await?;
@@ -292,9 +376,9 @@ pub async fn run_proxy(bind: &str, port: u16) -> Result<(), String> {
     let auth = AuthConfig::from_env();
     
     if auth.enabled {
-        info!("Authentication enabled (METHOD 0x02)");
+        info!("Authentication enabled (method 0x02 available)");
     } else {
-        info!("Authentication disabled (METHOD 0x00 - original behavior)");
+        info!("Authentication disabled (only method 0x00 available)");
     }
 
     let addr = format!("{}:{}", bind, port);
