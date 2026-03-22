@@ -47,24 +47,7 @@ impl Default for AuthConfig {
     }
 }
 
-/// Telegram MTProto DC IDs and their WebSocket endpoints
-/// Based on official Telegram documentation: https://core.telegram.org/mtproto/transports
-/// Each Data Center (DC) has a namespaced WebSocket endpoint.
-/// 
-/// DC Range Mapping (from official mtproto implementation):
-/// - DC1: 149.154.160.0/22 (first 4 subnets), 149.154.172.0/24 (4th octet 172-175)
-/// - DC2: 149.154.164.0/22, 149.154.168.0/22, 149.154.172.0/24 (4th octet 172-175)
-/// - DC3: 149.154.168.0/22 (4th octet 168-171), 91.108.8.0/22, 91.108.12.0/22
-/// - DC4: 91.108.12.0/22 (4th octet 12-15)
-/// - DC5: 91.108.56.0/22 (4th octet 56-59)
-/// DC extraction from obfuscated2 init packet (same method as tg-ws-proxy)
-///
-/// The first 64 bytes of MTProto obfuscated2 connection contain:
-/// - Bytes 8-39: AES key (32 bytes)
-/// - Bytes 40-55: AES IV (16 bytes)
-/// - Bytes 60-63: Encrypted DC ID (little-endian)
-///
-/// This function decrypts the DC ID using the contained key/IV.
+// DC extraction from obfuscated2 init packet (same method as tg-ws-proxy)
 fn extract_dc_from_init(init: &[u8; 64]) -> Option<u8> {
     use aes::Aes256;
     use cipher::{KeyIvInit, StreamCipher};
@@ -79,11 +62,9 @@ fn extract_dc_from_init(init: &[u8; 64]) -> Option<u8> {
     let mut cipher = Aes256Ctr::new(key.into(), iv.into());
     cipher.apply_keystream(&mut dec);
 
-    // Extract DC ID from the last 4 bytes (little-endian)
     let dc_id = i32::from_le_bytes([dec[60], dec[61], dec[62], dec[63]]);
     let dc = dc_id.unsigned_abs() as u8;
     
-    // Telegram officially supports 5 Data Centers
     if (1..=5).contains(&dc) {
         Some(dc)
     } else {
@@ -92,45 +73,31 @@ fn extract_dc_from_init(init: &[u8; 64]) -> Option<u8> {
 }
 
 /// Get WebSocket endpoint URL for a given DC
-///
-/// Uses the official tg-ws-proxy naming convention (kws prefix):
-/// - DC1: kws1.web.telegram.org
-/// - DC2: kws2.web.telegram.org
-/// - DC3: kws3.web.telegram.org
-/// - DC4: kws4.web.telegram.org
-/// - DC5: kws5.web.telegram.org
 fn ws_url(dc: u8) -> String {
     format!("wss://kws{}.web.telegram.org/apiws", dc)
 }
 
 /// Map IPv4 address to Telegram DC ID
-///
-/// Telegram uses specific subnet ranges for each Data Center.
-/// This mapping is based on official mtproto implementation.
 fn dc_from_ip(ip: Ipv4Addr) -> Option<u8> {
     let o = ip.octets();
     
-    // DC1 & DC2 & DC3_alt (149.154.160-175.x.x)
-    // The 4th octet range 172-175 is used by multiple DCs
     if o[0] == 149 && o[1] == 154 {
         match o[2] {
-            160..=163 => Some(1),      // DC1 primary
-            164..=167 => Some(2),      // DC2 primary
-            168..=171 => Some(3),      // DC3 primary
-            172..=175 => Some(1),      // DC1 alternate range (172-175 maps to DC1 per original code)
+            160..=163 => Some(1),
+            164..=167 => Some(2),
+            168..=171 => Some(3),
+            172..=175 => Some(1),
             _ => None,
         }
     }
-    // DC3, DC4, DC5 (91.108.x.x)
     else if o[0] == 91 && o[1] == 108 {
         match o[2] {
-            56..=59 => Some(5),        // DC5
-            8..=11 => Some(3),         // DC3
-            12..=15 => Some(4),        // DC4
+            56..=59 => Some(5),
+            8..=11 => Some(3),
+            12..=15 => Some(4),
             _ => None,
         }
     }
-    // DC2 alternate ranges (documented in official mtproto)
     else if (o[0] == 91 && o[1] == 105) || (o[0] == 185 && o[1] == 76) {
         Some(2)
     } else {
@@ -138,7 +105,6 @@ fn dc_from_ip(ip: Ipv4Addr) -> Option<u8> {
     }
 }
 
-/// Check if an address is a Telegram server IP
 fn is_telegram_ip(addr: &str) -> bool {
     addr.parse::<Ipv4Addr>()
         .ok()
@@ -179,7 +145,6 @@ async fn relay_via_ws(
     let url = ws_url(dc);
     let mut request = url.as_str().into_client_request()?;
 
-    // Required header for Telegram WebSocket (from mtproto spec)
     request
         .headers_mut()
         .insert("Sec-WebSocket-Protocol", "binary".parse()?);
@@ -195,13 +160,8 @@ async fn relay_via_ws(
 
     let (mut tcp_rx, mut tcp_tx) = tokio::io::split(tcp_stream);
 
-    // Send the buffered 64-byte init as the first WebSocket message
     ws.send(tungstenite::Message::Binary(init.to_vec())).await?;
 
-    // Single loop: handles TCP→WS, WS→TCP, and Ping/Pong in one place.
-    // This ensures Pong replies are sent immediately so the server
-    // doesn't kill the connection after a timeout.
-    // Note: 32768 is a reasonable buffer size for high-throughput relay
     const RELAY_BUFFER_SIZE: usize = 32768;
     let mut buf = vec![0u8; RELAY_BUFFER_SIZE];
 
@@ -217,7 +177,6 @@ async fn relay_via_ws(
                         }
                     }
                     Some(Ok(tungstenite::Message::Ping(payload))) => {
-                        // Telegram servers send regular pings, respond immediately
                         let _ = ws.send(tungstenite::Message::Pong(payload)).await;
                     }
                     Some(Ok(tungstenite::Message::Close(_))) | None => break,
@@ -240,7 +199,6 @@ async fn relay_via_ws(
         }
     }
 
-    // Gracefully close WebSocket connection
     let _ = ws.close(None).await;
     Ok(())
 }
@@ -254,43 +212,27 @@ async fn relay_tcp(client: TcpStream, remote: TcpStream) {
     }
 }
 
-/// Handle SOCKS5 username/password authentication (RFC 1929)
-///
-/// RFC 1929 format:
-/// - Request: [Version: 1][ULen: 1][UserName: ULen][PLen: 1][Password: PLen]
-/// - Response: [Version: 1][Status: 1] (0=success, 1=failure)
 async fn handle_auth(stream: &mut TcpStream, auth: &AuthConfig) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    // Read version byte (should be 0x01 for RFC 1929)
     let mut v_buf = [0u8; 1];
     stream.read_exact(&mut v_buf).await?;
     if v_buf[0] != 0x01 {
         return Ok(false);
     }
 
-    // Read username length
     let mut ulen_buf = [0u8; 1];
     stream.read_exact(&mut ulen_buf).await?;
     let ulen = ulen_buf[0] as usize;
-    
-    info!("Auth request - username length: {}", ulen);
 
-    // Read username
     let mut username_buf = vec![0u8; ulen];
     stream.read_exact(&mut username_buf).await?;
-    info!("Read username: {:?}", String::from_utf8_lossy(&username_buf));
 
-    // Read password length
     let mut plen_buf = [0u8; 1];
     stream.read_exact(&mut plen_buf).await?;
     let plen = plen_buf[0] as usize;
-    
-    info!("Auth request - password length: {}", plen);
 
-    // Read password
     let mut password_buf = vec![0u8; plen];
     stream.read_exact(&mut password_buf).await?;
 
-    // Verify credentials using constant-time comparison to prevent timing attacks
     use subtle::ConstantTimeEq;
     let valid = auth.username.as_ref()
         .map(|u| u.as_bytes().ct_eq(&username_buf).into())
@@ -298,18 +240,13 @@ async fn handle_auth(stream: &mut TcpStream, auth: &AuthConfig) -> Result<bool, 
         && auth.password.as_ref()
         .map(|p| p.as_bytes().ct_eq(&password_buf).into())
         .unwrap_or(false);
-    
-    info!("Auth valid={} (user_len={}, pass_len={})", valid, username_buf.len(), password_buf.len());
+
+    info!("Auth valid={}", valid);
 
     if valid {
-        // Success (RFC 1929: Version 1, Status 0)
-        info!("Auth success, sending response [0x01, 0x00]");
         stream.write_all(&[0x01, 0x00]).await?;
         Ok(true)
     } else {
-        // Failure (RFC 1929: Version 1, Status 1)
-        // DO NOT log the username - this prevents user enumeration attacks
-        info!("Auth failed, sending response [0x01, 0x01]");
         stream.write_all(&[0x01, 0x01]).await?;
         error!("Authentication failed for user attempt");
         Ok(false)
@@ -321,29 +258,32 @@ async fn handle_socks5(mut stream: TcpStream, auth: &AuthConfig) -> Result<(), B
     
     info!("New connection accepted");
 
-    // --- auth negotiation ---
     let mut buf = [0u8; 258];
     let n = stream.read(&mut buf).await?;
     info!("Received {} bytes from client", n);
+    
     if n < 2 || buf[0] != 0x05 {
         return Err("Not SOCKS5".into());
     }
 
-    // Determine authentication methods to offer
-    // Always offer no-auth (0x00) first for backward compatibility
-    let mut methods = vec![0x00];
-    // Offer user/pass auth (0x02) if enabled
-    if auth.enabled && auth.username.is_some() && auth.password.is_some() {
-        methods.push(0x02); // Username/Password auth (RFC 1929)
-        info!("Offered auth methods: [no-auth, user/pass]");
-    } else {
-        info!("Offered auth methods: [no-auth only]");
+    let nmethods = buf[1] as usize;
+    if n < 2 + nmethods {
+        info!("Need {} methods, only got {}", 2 + nmethods, n);
+        return Err("Incomplete auth methods".into());
     }
 
-    // Send authentication methods
+    info!("Client offered methods: {:?}", &buf[2..2 + nmethods]);
+
+    // Build our method response - offering what the client offered
+    let mut methods = vec![0x00]; // Always offer no-auth
+    if auth.enabled && auth.username.is_some() && auth.password.is_some() {
+        methods.push(0x02); // Include user/pass if enabled
+    }
+    
+    // Send our method offer
     let mut response = vec![0x05, methods.len() as u8];
-    response.extend(methods);
-    info!("Sending auth methods: {:?}", response);
+    response.extend(methods.iter());
+    info!("Our methods: {:?}", response);
     stream.write_all(&response).await?;
     
     info!("Sent {} bytes to client", response.len());
@@ -353,10 +293,9 @@ async fn handle_socks5(mut stream: TcpStream, auth: &AuthConfig) -> Result<(), B
     stream.read_exact(&mut method_buf).await?;
     let chosen_method = method_buf[0];
     
-    info!("Client chose auth method: 0x{:02x}", chosen_method);
+    info!("Client chose method: 0x{:02x}", chosen_method);
 
     if chosen_method == 0x02 {
-        // Username/Password authentication
         if !handle_auth(&mut stream, auth).await? {
             return Err("Authentication failed".into());
         }
@@ -364,7 +303,6 @@ async fn handle_socks5(mut stream: TcpStream, auth: &AuthConfig) -> Result<(), B
     } else if chosen_method == 0x00 {
         info!("No authentication required");
     } else {
-        // No supported auth method - return method not found
         stream.write_all(&[0x05, 0xFF]).await?;
         return Err("No acceptable authentication method".into());
     }
@@ -381,28 +319,24 @@ async fn handle_socks5(mut stream: TcpStream, auth: &AuthConfig) -> Result<(), B
 
     info!("Connection: {}:{} (Telegram: {})", dest_addr, dest_port, is_tg);
 
-    // SOCKS5 success
     stream
         .write_all(&[0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0x04, 0x38])
         .await?;
 
     if is_tg {
-        // Read the first 64 bytes — obfuscated2 init packet
         let mut init = [0u8; 64];
         stream.read_exact(&mut init).await?;
 
-        // Extract DC from init packet (primary), fall back to IP-based
         let dc = extract_dc_from_init(&init).unwrap_or_else(|| {
             dest_addr
                 .parse::<Ipv4Addr>()
                 .ok()
                 .and_then(dc_from_ip)
-                .unwrap_or(2)  // Default to DC2 if all else fails
+                .unwrap_or(2)
         });
 
         info!("Using WebSocket tunnel for DC{}", dc);
 
-        // Try WebSocket tunnel
         let ws_result = relay_via_ws(stream, dc, &init).await;
 
         if let Err(e) = ws_result {
@@ -410,7 +344,6 @@ async fn handle_socks5(mut stream: TcpStream, auth: &AuthConfig) -> Result<(), B
             return Err(format!("DC{} tunnel: {}", dc, e).into());
         }
     } else {
-        // Non-Telegram — direct TCP passthrough
         let target = format!("{}:{}", dest_addr, dest_port);
         match TcpStream::connect(&target).await {
             Ok(remote) => {
