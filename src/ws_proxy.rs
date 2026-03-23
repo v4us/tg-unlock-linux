@@ -7,10 +7,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::tungstenite;
 use tungstenite::client::IntoClientRequest;
-use log::{info, debug, error};
+use log::error;
+use log::info;
 use std::env;
-use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+// Removed unused imports: Socket_ADDR, AtomicBool, AtomicU32, Ordering
 
 /// SOCKS5 Auth config (from environment variables)
 #[derive(Clone)]
@@ -100,6 +100,58 @@ impl TrustedIps {
     pub async fn get_ip_stats(&self) -> HashMap<String, u64> {
         let map = self.map.lock().await;
         map.iter().map(|(ip, _)| (ip.clone(), 1)).collect()
+    }
+}
+
+// Connection tracker per IP to limit concurrent connections (prevents memory leak under load)
+#[derive(Clone)]
+struct ConnectionTracker {
+    // Arc-wrapped cloneable data
+    data: Arc<Mutex<ConnectionData>>,
+}
+
+// The actual data that can be cloned
+#[derive(Clone)]
+struct ConnectionData {
+    ips: HashMap<String, Vec<std::time::SystemTime>>,
+    max_connections: u32,
+}
+
+impl ConnectionTracker {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            data: Arc::new(Mutex::new(ConnectionData {
+                ips: HashMap::new(),
+                max_connections: 100, // Limit to 100 concurrent connections per IP (raised from 10)
+            })),
+        })
+    }
+
+    async fn try_acquire(&self, ip: &str) -> bool {
+        let now = std::time::SystemTime::now();
+        let max_connections = self.data.lock().await.max_connections;
+        
+        let mut data = self.data.lock().await;
+        let connections = data.ips.entry(ip.to_string()).or_insert_with(Vec::new);
+        
+        // Check if already at max - if so, remove oldest (FIFO)
+        if connections.len() >= max_connections as usize {
+            connections.remove(0); // Remove oldest connection
+        }
+        
+        // Add new connection
+        connections.push(now);
+        true
+    }
+
+    async fn release(&self, ip: &str) {
+        let mut data = self.data.lock().await;
+        if let Some(connections) = data.ips.get_mut(ip) {
+            connections.pop();
+            if connections.is_empty() {
+                data.ips.remove(ip);
+            }
+        }
     }
 }
 
@@ -195,6 +247,8 @@ async fn relay_via_ws(
     tcp_stream: TcpStream,
     dc: u8,
     init: &[u8; 64],
+    conn_tracker: Arc<ConnectionTracker>,
+    client_ip: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use futures_util::{SinkExt, StreamExt};
     use tokio::time::{self, Duration};
@@ -210,10 +264,22 @@ async fn relay_via_ws(
         native_tls::TlsConnector::new().map_err(|e| format!("TLS: {}", e))?,
     );
 
-    let (mut ws, _resp) = tokio_tungstenite::connect_async_tls_with_config(
-        request, None, false, Some(connector),
-    )
-    .await?;
+    // Add 10-second timeout for WebSocket connection (prevents pileup under load)
+    let ws_result = time::timeout(Duration::from_secs(10), 
+        tokio_tungstenite::connect_async_tls_with_config(
+            request, None, false, Some(connector),
+        )
+    ).await;
+
+    let (mut ws, _resp) = match ws_result {
+        Ok(Ok(result)) => result,
+        Ok(Err(e)) => {
+            return Err(format!("WebSocket connect error: {}", e).into());
+        }
+        Err(_) => {
+            return Err(format!("WebSocket connect timeout for DC{}", dc).into());
+        }
+    };
 
     let (mut tcp_rx, mut tcp_tx) = tokio::io::split(tcp_stream);
 
@@ -222,10 +288,11 @@ async fn relay_via_ws(
     const RELAY_BUFFER_SIZE: usize = 32768;
     let mut buf = vec![0u8; RELAY_BUFFER_SIZE];
 
-    // Ping interval: send ping every 15 seconds to keep inbound connection alive
-    let mut ping_interval = time::interval(Duration::from_secs(15));
+    // Ping interval: send ping every 5 seconds to keep inbound connection alive
+    let mut ping_interval = time::interval(Duration::from_secs(5));
 
-    loop {
+    // Use try-finally pattern to ensure connection is released
+    let result = loop {
         tokio::select! {
             biased;
 
@@ -238,37 +305,40 @@ async fn relay_via_ws(
                 match ws_msg {
                     Some(Ok(tungstenite::Message::Binary(data))) => {
                         if tcp_tx.write_all(data.as_ref()).await.is_err() {
-                            break;
+                            break Ok(());
                         }
                     }
                     Some(Ok(tungstenite::Message::Ping(payload))) => {
                         let _ = ws.send(tungstenite::Message::Pong(payload)).await;
                     }
-                    Some(Ok(tungstenite::Message::Close(_))) | None => break,
-                    Some(Err(_)) => break,
+                    Some(Ok(tungstenite::Message::Close(_))) | None => break Ok(()),
+                    Some(Err(_)) => break Ok(()),
                     _ => {}
                 }
             }
 
             n = tcp_rx.read(&mut buf) => {
                 match n {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) | Err(_) => break Ok(()),
                     Ok(n) => {
                         let msg = tungstenite::Message::Binary(buf[..n].to_vec());
                         if ws.send(msg).await.is_err() {
-                            break;
+                            break Ok(());
                         }
                     }
                 }
             }
         }
-    }
+    };
 
     let _ = ws.close(None).await;
 
     info!("Connection closed - WebSocket tunnel ended");
 
-    Ok(())
+    // Release connection slot
+    conn_tracker.release(&client_ip).await;
+
+    result
 }
 
 async fn relay_tcp(client: TcpStream, remote: TcpStream) {
@@ -348,10 +418,15 @@ fn select_auth_method(client_methods: &[u8], auth: &AuthConfig, is_trusted: bool
     None
 }
 
-async fn handle_socks5(mut stream: TcpStream, auth: &AuthConfig, trusted_ips: &TrustedIps) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn handle_socks5(
+    mut stream: TcpStream,
+    auth: &AuthConfig,
+    trusted_ips: &TrustedIps,
+    conn_tracker: &ConnectionTracker,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     stream.set_nodelay(true)?;
     
-    // Extract client IP for trusted IP check
+    // Extract client IP for trusted IP check and connection tracking
     let client_ip = stream.peer_addr().ok().map(|addr| addr.ip().to_string());
     let is_trusted = if let Some(ref ip) = client_ip {
         trusted_ips.is_trusted(ip).await
@@ -445,7 +520,21 @@ async fn handle_socks5(mut stream: TcpStream, auth: &AuthConfig, trusted_ips: &T
         // Log connection destination for traffic statistics
         info!("Connection to {}:{}", dest_addr, dest_port);
 
-        let ws_result = relay_via_ws(stream, dc, &init).await;
+        // Check connection limit before proceeding
+        if let Some(ref ip) = client_ip {
+            if !conn_tracker.try_acquire(ip).await {
+                error!("Connection limit exceeded for IP {}", ip);
+                return Err("Too many connections from this IP".into());
+            }
+        }
+
+        let ws_result = relay_via_ws(
+            stream, 
+            dc, 
+            &init,
+            Arc::new(conn_tracker.clone()), 
+            client_ip.unwrap_or_else(|| "unknown".to_string())
+        ).await;
 
         if let Err(e) = ws_result {
             error!("DC{} tunnel: {}", dc, e);
@@ -471,6 +560,7 @@ async fn handle_socks5(mut stream: TcpStream, auth: &AuthConfig, trusted_ips: &T
 pub async fn run_proxy(bind: &str, port: u16) -> Result<(), String> {
     let auth = AuthConfig::from_env();
     let trusted_ips = TrustedIps::new();
+    let conn_tracker = ConnectionTracker::new();
     
     if auth.enabled {
         info!("Authentication enabled (method 0x02 available)");
@@ -494,8 +584,10 @@ pub async fn run_proxy(bind: &str, port: u16) -> Result<(), String> {
                 if let Ok((stream, _)) = result {
                     let auth = auth.clone();
                     let trusted_ips = trusted_ips.clone();
+                    let conn_tracker = conn_tracker.clone();
+                    let _client_ip = stream.peer_addr().ok().map(|a| a.ip().to_string()).unwrap_or_default();
                     tokio::spawn(async move {
-                        let _ = handle_socks5(stream, &auth, &trusted_ips).await;
+                        let _ = handle_socks5(stream, &auth, &trusted_ips, &conn_tracker).await;
                     });
                 }
             }
