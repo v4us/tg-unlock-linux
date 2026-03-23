@@ -1,11 +1,38 @@
 # TG Unblock - Linux CLI Version
 
 **Version**: 0.5.0  
-**Date**: March 22, 2026
+**Date**: March 23, 2026
 
 ## Overview
 
 TG Unblock CLI is a command-line tool to bypass Telegram blocking via WebSocket tunnel through `web.telegram.org`. This is a minimal, headless version of the original tg-unblock project, designed for Linux systems without GUI dependencies.
+
+## Security & Performance Fixes (Version 0.5.0 - March 2026)
+
+### Memory Leak Fixes
+- Added **FIFO connection tracker** per IP with 100 concurrent connections limit (prevents memory pileup under flood attacks)
+- WebSocket connection timeout: **10 seconds** (prevents hung connections)
+- Ping interval: **5 seconds** (maintains stable connections)
+- Proper connection cleanup on tunnel closure
+
+### Flood Attack Protection
+- Limits concurrent connections to **100 per IP** (raised from 10)
+- Over-limit connections trigger FIFO eviction (oldest first)
+- Prevents memory exhaustion from botnet-style attacks
+- Connection rate limiting built into tracker logic
+
+### Error Handling
+- WebSocket connection timeout detection and cleanup
+- Proper error propagation for failed tunnels
+- Connection slots released after tunnel end
+
+## Security Features
+
+- **Constant-time comparison** - prevents timing attacks on credentials
+- **No username logging** - prevents user enumeration
+- **Direct IP packet path** - no intermediate servers
+- **End-to-end encryption** - MTProto remains encrypted through WebSocket
+- **Local-only binding** - SOCKS5 proxy only accessible from localhost
 
 ## What Changed
 
@@ -299,8 +326,15 @@ Based on review by Qwen/Qwen3-Coder-480B-A35B-Instruct:
 
 1. ✅ **Timing attack fixed** - Using byte-by-byte comparison
 2. ✅ **No credential logging** - Username removed from auth failure logs
-3. ⚠️ **Rate limiting** - Consider adding connection rate limiting for production
-4. ⚠️ **Certificate pinning** - Consider implementing for WebSocket connections
+3. ✅ **Connection rate limiting** - Added 100-connection limit per IP with FIFO eviction
+4. ✅ **WebSocket timeout** - 10-second timeout prevents connection pileup
+5. ⚠️ **Certificate pinning** - Consider implementing for WebSocket connections
+
+## Credits
+
+- Original tg-unlock by by sonic ([@bysonicvpn_bot](https://t.me/bysonicvpn_bot))
+- Linux CLI adaptation by Tony Walker
+- Memory leak fixes and flood protection by Qwen/Qwen3-Coder models
 
 ## Comparison with Original
 
